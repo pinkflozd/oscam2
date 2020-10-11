@@ -2387,6 +2387,9 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 		tpl_addVar(vars, TPLADD, "AUDISABLEDVALUE", (rdr->audisabled == 1) ? "1" : "0");
 	}
 
+	tpl_printf(vars, TPLADD, "TMP", "AUTYPE%d", rdr->autype);
+	tpl_addVar(vars, TPLADD, tpl_getVar(vars, "TMP"), "selected");
+
 	// AUprovid
 	if(rdr->auprovid)
 		{ tpl_printf(vars, TPLADD, "AUPROVID", "%06X", rdr->auprovid); }
@@ -2448,14 +2451,70 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 		for(i = 0; i < len ; i++)
 			{ tpl_printf(vars, TPLAPPEND, "BOXKEY", "%02X", rdr->boxkey[i]); }
 	}
+#ifdef READER_CONAX
+	// CWPK Key
+	len = rdr->cwpk_mod_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len; i++) { tpl_printf(vars, TPLAPPEND, "CWPKKEY", "%02X", rdr->cwpk_mod[i]); }
+	}
+#endif
 
 #ifdef READER_NAGRA_MERLIN
+	// idird (CAK7)
+	len = rdr->idird_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "IDIRD", "%02X", rdr->idird[i]); }
+	}
+
+	// cmd0e_provider (CAK7)
+	len = rdr->cmd0eprov_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CMD0EPROV", "%02X", rdr->cmd0eprov[i]); }
+	}
+
 	// mod1 (CAK7)
 	len = rdr->mod1_length;
 	if(len > 0)
 	{
 		for(i = 0; i < len ; i++)
 			{ tpl_printf(vars, TPLAPPEND, "MOD1", "%02X", rdr->mod1[i]); }
+	}
+
+	// mod2 (CAK7)
+	len = rdr->mod2_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "MOD2", "%02X", rdr->mod2[i]); }
+	}
+
+	// key3588 (CAK7)
+	len = rdr->key3588_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "KEY3588", "%02X", rdr->key3588[i]); }
+	}
+
+	// key3310 (CAK7)
+	len = rdr->key3310_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+		{ tpl_printf(vars, TPLAPPEND, "KEY3310", "%02X", rdr->key3310[i]); }
+	}
+
+	// key3460 (CAK7)
+	len = rdr->key3460_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "KEY3460", "%02X", rdr->key3460[i]); }
 	}
 
 	// data50 (CAK7)
@@ -2474,22 +2533,6 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 			{ tpl_printf(vars, TPLAPPEND, "MOD50", "%02X", rdr->mod50[i]); }
 	}
 
-	// key60 (CAK7)
-	len = rdr->key60_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "KEY60", "%02X", rdr->key60[i]); }
-	}
-
-	// exp60 (CAK7)
-	len = rdr->exp60_length;
-	if(len > 0)
-	{
-		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "EXP60", "%02X", rdr->exp60[i]); }
-	}
-
 	// nuid (CAK7)
 	len = rdr->nuid_length;
 	if(len > 0)
@@ -2498,14 +2541,122 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 			{ tpl_printf(vars, TPLAPPEND, "NUID", "%02X", rdr->nuid[i]); }
 	}
 
-	// cwekey (CAK7)
-	len = rdr->cwekey_length;
+	// OTP CSC (CAK7)
+	len = rdr->otpcsc_length;
 	if(len > 0)
 	{
 		for(i = 0; i < len ; i++)
-			{ tpl_printf(vars, TPLAPPEND, "CWEKEY", "%02X", rdr->cwekey[i]); }
+			{ tpl_printf(vars, TPLAPPEND, "OTPCSC", "%02X", rdr->otpcsc[i]); }
 	}
+
+	// OTA CSC (CAK7)
+	len = rdr->otacsc_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "OTACSC", "%02X", rdr->otacsc[i]); }
+	}
+
+	// Force Pairing Type (CAK7)
+	len = rdr->forcepair_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "FORCEPAIR", "%02X", rdr->forcepair[i]); }
+	}
+
+	// cwekey0 (CAK7)
+	len = rdr->cwekey0_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY0", "%02X", rdr->cwekey0[i]); }
+	}
+
+	// cwekey1 (CAK7)
+	len = rdr->cwekey1_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY1", "%02X", rdr->cwekey1[i]); }
+	}
+
+	// cwekey2 (CAK7)
+	len = rdr->cwekey2_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY2", "%02X", rdr->cwekey2[i]); }
+	}
+
+	// cwekey3 (CAK7)
+	len = rdr->cwekey3_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY3", "%02X", rdr->cwekey3[i]); }
+	}
+
+	// cwekey4 (CAK7)
+	len = rdr->cwekey4_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY4", "%02X", rdr->cwekey4[i]); }
+	}
+
+	// cwekey5 (CAK7)
+	len = rdr->cwekey5_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY5", "%02X", rdr->cwekey5[i]); }
+	}
+
+	// cwekey6 (CAK7)
+	len = rdr->cwekey6_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY6", "%02X", rdr->cwekey6[i]); }
+	}
+
+	// cwekey7 (CAK7)
+	len = rdr->cwekey7_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWEKEY7", "%02X", rdr->cwekey7[i]); }
+	}
+
+	// force_cw_swap
+	if(rdr->forcecwswap)
+		{ tpl_addVar(vars, TPLADD, "FORCECWSWAPCHECKED", "checked"); }
+
+	// only_even_SA
+	if(rdr->evensa)
+		{ tpl_addVar(vars, TPLADD, "EVENSACHECKED", "checked"); }
+
+	// force_EMM_82
+	if(rdr->forceemmg)
+		{ tpl_addVar(vars, TPLADD, "FORCEEMMGCHECKED", "checked"); }
+
+        // OTA_CWPKs
+        if(rdr->cwpkota)
+                { tpl_addVar(vars, TPLADD, "CWPKOTACHECKED", "checked"); }
 #endif
+
+	// CWPK CaID (CAK7)
+	len = rdr->cwpkcaid_length;
+	if(len > 0)
+	{
+		for(i = 0; i < len ; i++)
+			{ tpl_printf(vars, TPLAPPEND, "CWPKCAID", "%02X", rdr->cwpkcaid[i]); }
+	}
+
+	// cak7_mode
+	if(rdr->cak7_mode)
+		{ tpl_addVar(vars, TPLADD, "NAGRACAK7MODECHECKED", "checked"); }
 
 	// ins7E
 	if(rdr->ins7E[0x1A])

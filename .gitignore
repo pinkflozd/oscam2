@@ -22,3 +22,6 @@ tests.bin.debug
 # Emu files
 *.patch
 SoftCam.*
+
+*.rej
+*.orig

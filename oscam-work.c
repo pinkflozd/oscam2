@@ -423,7 +423,6 @@ void *work_thread(void *ptr)
 					if(module->s_peer_idle)
 						{ module->s_peer_idle(cl); }
 					break;
-
 				case ACTION_CLIENT_HIDECARDS:
 				{
 #ifdef CS_ANTICASC

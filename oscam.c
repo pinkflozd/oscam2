@@ -41,6 +41,11 @@
 #include "reader-common.h"
 #include "module-gbox.h"
 
+#ifdef WITH_EMU
+	void add_emu_reader(void);
+	void stop_stream_server(void);
+#endif
+
 #ifdef WITH_SSL
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
@@ -437,6 +442,8 @@ static void write_versionfile(bool use_stdout)
 		case CLOCK_TYPE_MONOTONIC: write_conf(CLOCKFIX, "Clockfix with monotonic clock"); break;
 	}
 	write_conf(IPV6SUPPORT, "IPv6 support");
+	write_conf(WITH_EMU, "Emulator support");
+	write_conf(WITH_SOFTCAM, "Built-in SoftCam.Key");
 
 	fprintf(fp, "\n");
 	write_conf(MODULE_CAMD33, "camd 3.3x");
@@ -1834,6 +1841,9 @@ int32_t main(int32_t argc, char *argv[])
 
 	init_sidtab();
 	init_readerdb();
+#ifdef WITH_EMU
+	add_emu_reader();
+#endif
 	cfg.account = init_userdb();
 	init_signal();
 	init_provid();
@@ -1920,6 +1930,9 @@ int32_t main(int32_t argc, char *argv[])
 #ifdef MODULE_GBOX
 if(!cfg.gsms_dis)
 	{ stop_sms_sender(); }
+#endif
+#ifdef WITH_EMU
+	stop_stream_server();
 #endif
 	webif_close();
 	azbox_close();

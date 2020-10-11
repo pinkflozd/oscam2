@@ -106,7 +106,6 @@ static void protocol_fn(const char *token, char *value, void *setting, FILE *f)
 			{ "cccam",      R_CCCAM },
 			{ "cccam_ext",  R_CCCAM },
 			{ "cccam_mcs",  R_CCCAM },
-			{ "cccam_mcs_HB",  R_CCCAM },
 			{ "constcw",    R_CONSTCW },
 			{ "radegast",   R_RADEGAST },
 			{ "scam",       R_SCAM },

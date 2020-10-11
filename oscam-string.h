@@ -54,5 +54,4 @@ size_t ISO6937toUTF8(const uint8_t **inbuf, size_t *inbytesleft, uint8_t **outbu
 size_t ISO8859toUTF8(int8_t iso_table_number, const uint8_t **inbuf, size_t *inbytesleft, uint8_t **outbuf, size_t *outbytesleft);
 #endif
 size_t UnicodetoUTF8(const uint8_t **inbuf, size_t *inbytesleft, uint8_t **outbuf, size_t *outbytesleft);
-void cs_mkrndstr(char *randomString, uint8_t length);
 #endif

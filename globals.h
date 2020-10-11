@@ -538,7 +538,6 @@
 
 // moved from stats
 #define DEFAULT_REOPEN_SECONDS					30
-#define DEFAULT_NOK_TOLERANCE					20
 #define DEFAULT_MIN_ECM_COUNT					5
 #define DEFAULT_MAX_ECM_COUNT					500
 #define DEFAULT_NBEST							1
@@ -1128,13 +1127,12 @@ struct s_ecm_answer
 	uint8_t			cw[16];
 	EXTENDED_CW		cw_ex;
 	char			msglog[MSGLOGSIZE];
-	struct timeb		time_request_sent;	// using for evaluate ecm_time
+	struct timeb	time_request_sent;				// using for evaluate ecm_time
 	int32_t			ecm_time;
-	uint16_t		tier;			// only filled by local videoguard reader atm
+	uint16_t		tier;							// only filled by local videoguard reader atm
 #ifdef WITH_LB
 	int32_t			value;
 	int32_t			time;
-	uint8_t			lb_best_marked;		// when lb search for the best reader
 #endif
 	struct s_ecm_answer *next;
 	CS_MUTEX_LOCK	ecmanswer_lock;
@@ -1385,7 +1383,6 @@ struct s_client
 	struct s_client	*nexthashed;
 
 	int8_t			start_hidecards;
-	time_t			unhidecards_start_time;
 };
 
 typedef struct s_ecm_whitelist_data
@@ -1830,12 +1827,11 @@ struct s_reader										// contains device info, reader info and card info
 	int8_t			lb_force_fallback;				// force this reader as fallback if fallback or fallback_percaid paramters set
 	int32_t			lb_usagelevel;					// usagelevel for loadbalancer
 	int32_t			lb_usagelevel_ecmcount;
-	struct timeb		lb_usagelevel_time;				// time for counting ecms, this creates usagelevel
-	struct timeb		lb_last;						// time for oldest reader
+	struct timeb	lb_usagelevel_time;				// time for counting ecms, this creates usagelevel
+	struct timeb	lb_last;						// time for oldest reader
 	LLIST			*lb_stat;						// loadbalancer reader statistics
-	CS_MUTEX_LOCK		lb_stat_lock;
+	CS_MUTEX_LOCK	lb_stat_lock;
 	int32_t			lb_stat_busy;					// do not add while saving
-	char			unique_id[8];		// Used for marking the best reader in loadbalancer
 #endif
 
 	AES_ENTRY		*aes_list;						// multi AES linked list
@@ -2346,7 +2342,6 @@ struct s_config
 	int32_t			lb_min_ecmcount;				// minimal ecm count to evaluate lbvalues
 	int32_t			lb_max_ecmcount;				// maximum ecm count before reseting lbvalues
 	int32_t			lb_reopen_seconds;				// time between retrying failed readers/caids/prov/srv
-	uint32_t		lb_nok_tolerance;				// ecm NOK tolerance in percent, e.g. 90% NOK is allowed otherwise reader get blocked for lb_reopen_secconds time
 	int8_t			lb_reopen_invalid;				// default=1; if 0, rc=E_INVALID will be blocked until stats cleaned
 	int8_t			lb_force_reopen_always;			// force reopening immediately all failing readers if no matching reader found
 	int32_t			lb_retrylimit;					// reopen only happens if reader response time > retrylimit

@@ -2,7 +2,6 @@
 
 #include "globals.h"
 #include "module-cccam.h"
-#include "module-cccam-data.h"
 #include "module-led.h"
 #include "module-stat.h"
 #include "module-dvbapi.h"
@@ -564,25 +563,7 @@ const char *reader_get_type_desc(struct s_reader *rdr, int32_t extended)
 	{
 		desc = "cccam";
 		if(extended && cccam_client_extended_mode(rdr->client)) desc = "cccam_ext";
-		if(cccam_client_multics_mode(rdr->client))
-		{
-			if(rdr->client->cc && ((struct cc_data *)rdr->client->cc)->multics_mode)
-			{
-				switch(((struct cc_data *)rdr->client->cc)->multics_mode)
-				{
-					case 2:
-						desc = "cccam_mcs";
-						break;
-
-					case 3:
-						desc = "cccam_mcs_HB";
-						break;
-
-					default:
-						break;
-				}
-			}
-		}
+		if(cccam_client_multics_mode(rdr->client)) desc = "cccam_mcs";
 	}
 	return desc;
 }
@@ -1240,11 +1221,6 @@ void reader_do_idle(struct s_reader *reader)
 
 int32_t reader_init(struct s_reader *reader)
 {
-	if (reader == NULL)
-	{
-		return 0;
-	}
-
 	struct s_client *client = reader->client;
 
 	if(is_cascading_reader(reader))
@@ -1283,9 +1259,6 @@ int32_t reader_init(struct s_reader *reader)
 	}
 
 	ll_destroy_data(&reader->emmstat);
-
-	// set unique_id to the reader
-	cs_mkrndstr(reader->unique_id, sizeof(reader->unique_id));
 
 	client->login = time((time_t *)0);
 	client->init_done = 1;

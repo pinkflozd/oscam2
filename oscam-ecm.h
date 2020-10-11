@@ -31,8 +31,7 @@ void chk_dcw(struct s_ecm_answer *ea);
 void request_cw_from_readers(ECM_REQUEST *er, uint8_t stop_stage);
 
 void checkCW(ECM_REQUEST *er);
-uint8_t checkCWpart(uint8_t *cw, uint8_t part);
-bool isCW64bit(uint8_t *cw);
+uint8_t checkCWpart(uint8_t *cw, int8_t part);
 
 #ifdef CS_CACHEEX_AIO
 void init_ecm_cache(void);

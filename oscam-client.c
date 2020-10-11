@@ -5,7 +5,6 @@
 #include "cscrypt/md5.h"
 #include "module-anticasc.h"
 #include "module-cccam.h"
-#include "module-cccam-data.h"
 #include "module-webif.h"
 #include "oscam-array.h"
 #include "oscam-conf-chk.h"
@@ -83,8 +82,7 @@ const char *remote_txt(void)
 
 const char *client_get_proto(struct s_client *cl)
 {
-	const char *ctyp = "unknown";
-
+	const char *ctyp;
 	switch(cl->typ)
 	{
 		case 's':
@@ -107,27 +105,7 @@ const char *client_get_proto(struct s_client *cl)
 
 #endif
 		case 'c':
-			if(cccam_client_multics_mode(cl))
-			{
-				if(cl->cc && ((struct cc_data *)cl->cc)->multics_mode)
-				{
-					switch(((struct cc_data *)cl->cc)->multics_mode)
-					{
-						case 2:
-							ctyp = "cccam_mcs";
-							break;
-
-						case 3:
-							ctyp = "cccam_mcs_HB";
-							break;
-
-						default:
-							break;
-					}
-				}
-				break;
-			}
-			else if(cccam_client_extended_mode(cl))
+			if(cccam_client_extended_mode(cl))
 			{
 				ctyp = "cccam_ext";
 				break;
@@ -135,7 +113,6 @@ const char *client_get_proto(struct s_client *cl)
 
 		default:
 			ctyp = get_module(cl)->desc;
-			break;
 	}
 	return ctyp;
 }

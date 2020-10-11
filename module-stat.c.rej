@@ -1,0 +1,1083 @@
+--- module-stat.c
++++ module-stat.c
+@@ -1773,436 +2229,784 @@ void stat_get_best_reader(ECM_REQUEST *er)
+ 	}
+ 
+ 	struct timeb check_time;
+-	cs_ftime(&check_time);
+ 	int64_t current = -1;
+ 	READER_STAT *s = NULL;
+ 	int32_t retrylimit = get_retrylimit(er);
+-	int32_t nlocal_readers = 0;
+-
+-	int32_t nbest_readers = get_nbest_readers(er); // Number of NON fallback readers ecm requests go (minimum 1)
+-	int32_t nfb_readers = get_nfb_readers(er); // Number of fallback readers ecm requests go (minimum 1)
+-	int32_t nreaders = cfg.lb_max_readers; // lb_max_readers is limit lb uses while learning
+ 
++	int32_t force_reopen = 0;
+ 
+-	if(!nreaders) // if is configured zero -> replace it by -1 (default means unlimited!)
+-		{ nreaders = -1; }
+-	else if(nreaders <= nbest_readers)
+-		{ nreaders = nbest_readers + 1; } // nreaders must cover nbest more 1 reader for try to unblock/add stats
+-
+-	int32_t reader_active = 0;
+-	int32_t max_reopen = nreaders - nbest_readers; // if nreaders=-1, we try to reopen all readers
+-
++	uint8_t nbest_readers = (uint8_t)get_nbest_readers(er); // Number of NON fallback readers ecm requests go (minimum 1)
++	uint8_t nfb_readers = (uint8_t)get_nfb_readers(er); // Number of fallback readers ecm requests go (minimum 1)
++	uint8_t lbmaxreaders = (uint8_t)cfg.lb_max_readers; // lb_max_readers is limit lb uses while learning
++	uint8_t readers_active = 0;
++	uint8_t fb_readers_active = 0;
++	uint8_t readers_under_retrylimit = 0;
++	uint8_t readers_over_retrylimit = 0;
++	uint32_t readers_total = 0; // total matching readers sum
++	int64_t prev_current = -1;
++	int64_t prev_currentus = -1;
++	uint8_t fbm = 0;
++	uint8_t bsm = 0;
+ 
+-#ifdef WITH_DEBUG
+-	if(cs_dblevel & D_LB)
++	cs_log_dbg(D_LB, "loadbalancer: --------------------------------------------");
++	cs_log_dbg(D_LB, "loadbalancer: Current configuration: lb_mode %d, lb_nbest_readers %d, lb_nfb_readers %d, lb_max_readers %d, matching readers %d, lb_retrylimit %d ms, retrylimit: under/over(%d/%d)",
++					cfg.lb_mode, nbest_readers, nfb_readers, lbmaxreaders, readers_total, retrylimit, readers_under_retrylimit, readers_over_retrylimit);
++
++	/*
++	 * Count available readers, prefill some needed stats in case no stats, also
++	 * make all readers inactive by default so it will be activated later.
++	 * Remove all best marked readers first, than premark only valid readers.
++	 * Skip cacheex=1 readers.
++	 */
++	for (ea = er->matching_rdr; ea; ea = ea->next)
+ 	{
+-		//loadbalancer debug output:
+-		int32_t nr = 0;
+-		char buf[512];
+-		int n, l = 512;
+-		char *rptr = buf;
+-		*rptr = 0;
++		rdr = ea->reader;
+ 
+-		for(ea = er->matching_rdr; ea; ea = ea->next)
++		if (rdr == NULL)
+ 		{
+-			nr++;
+-			if(nr > 5) { continue; }
+-
+-			if(!(ea->status & READER_FALLBACK))
+-				{ n = snprintf(rptr, l, "%s%s%s ", ea->reader->label, (ea->status & READER_CACHEEX) ? "*" : "", (ea->status & READER_LOCAL) ? "L" : ""); }
+-			else
+-				{ n = snprintf(rptr, l, "[%s%s%s] ", ea->reader->label, (ea->status & READER_CACHEEX) ? "*" : "", (ea->status & READER_LOCAL) ? "L" : ""); }
+-			rptr += n;
+-			l -= n;
++			continue;
+ 		}
+ 
+-		if(nr > 5)
+-			{ snprintf(rptr, l, "...(%d more)", nr - 5); }
+-
+-		char ecmbuf[ECM_FMT_LEN];
+-		format_ecm(er, ecmbuf, ECM_FMT_LEN);
++		if (!er->reader_avail)
++		{
++			continue;
++		}
+ 
+-		cs_log_dbg(D_LB, "loadbalancer: client %s for %s: n=%d valid readers: %s",
+-					username(er->client), ecmbuf, nr, buf);
+-	}
++#ifdef CS_CACHEEX
++		// if cacheex reader, always active and no stats
++		if (rdr->cacheex.mode == 1)
++		{
++			ea->status |= READER_ACTIVE;
++			continue;
++		}
+ #endif
+ 
+-	//Deactive all matching readers and set ea->value = 0;
+-	for(ea = er->matching_rdr; ea; ea = ea->next)
+-	{
++		// Deactivate reader fist and reset things
+ 		ea->status &= ~(READER_ACTIVE | READER_FALLBACK);
+ 		ea->value = 0;
+-	}
+-
+-	cs_log_dbg(D_LB, "loadbalancer: --------------------------------------------");
+-	if(max_reopen < 1) { cs_log_dbg(D_LB, "loadbalancer: mode %d, nbest %d, nfb %d, max_reopen ALL, retrylimit %d ms", cfg.lb_mode, nbest_readers, nfb_readers, retrylimit); }
+-	else { cs_log_dbg(D_LB, "loadbalancer: mode %d, nbest %d, nfb %d, max_reopen %d, retrylimit %d ms", cfg.lb_mode, nbest_readers, nfb_readers, max_reopen, retrylimit); }
++		ea->lb_best_marked = 0;
++		readers_total += 1;
+ 
++		s = get_stat(rdr, &q);
+ 
+-	// Here evaluate lbvalue for readers with valid statistics
+-	for(ea = er->matching_rdr; ea; ea = ea->next)
++		if (s == NULL)
++		{
++			continue;
++		}
++
++		/*
++		 * temporary mark all E_FOUND readers which is under ecm count.
++		 * we doing premark first, 0xee = under, 0xff = over
++		 * later we will do final mark, U = under, O = over, F = under (fallback), G = over (fallback)
++		 */
++		if (s->time_avg && retrylimit)
++		{
++			if (s->rc == E_FOUND && s->time_avg <= retrylimit && s->ecm_count >= cfg.lb_min_ecmcount && s->ecm_count <= cfg.lb_max_ecmcount)
++			{
++				readers_under_retrylimit += 1;
++				ea->lb_best_marked = 0xee;
++			}
++
++			if (s->rc == E_FOUND && s->time_avg > retrylimit && s->ecm_count >= cfg.lb_min_ecmcount && s->ecm_count <= cfg.lb_max_ecmcount)
++			{
++				readers_over_retrylimit += 1;
++				ea->lb_best_marked = 0xff;
++			}
++		}
++		else
++		{
++			cs_log_dbg(D_LB, "loadbalancer: reader %s is not premarked, without (time_avg: %d and retrylimit: %d) dependency!", rdr->label, s->time_avg, retrylimit);
++		}
++	}
++
++	// Now recalculate things
++	if (nbest_readers >= readers_total)
+ 	{
+-		rdr = ea->reader;
+-		s = get_stat(rdr, &q);
++		nbest_readers = readers_total;
++		nfb_readers = 0; // no space for nfb readers!
++	}
++
++	// In case there is some space for nfb, correct it.
++	if (nfb_readers > 0)
++	{
++		if (nfb_readers + nbest_readers >= readers_total)
++		{
++			nfb_readers = readers_total - nbest_readers;
++		}
++	}
++
++	// change lb_max_readers to curently available readers.
++	lbmaxreaders = readers_total;
++
++	cs_log_dbg(D_LB, "loadbalancer: Recalculated configuration: lb_mode %d, lb_nbest_readers %d, lb_nfb_readers %d, lb_max_readers %d, matching readers %d, lb_retrylimit %d ms, retrylimit: under/over(%d/%d)",
++					cfg.lb_mode, nbest_readers, nfb_readers, lbmaxreaders, readers_total, retrylimit, readers_under_retrylimit, readers_over_retrylimit);
++
++#ifdef WITH_DEBUG
++	if (cs_dblevel & D_LB)
++	{
++		char *ecmbuf = NULL;
+ 
+-		int32_t weight = rdr->lb_weight <= 0 ? 100 : rdr->lb_weight;
+-		//struct s_client *cl = rdr->client;
++		if (cs_malloc(&ecmbuf, ECM_FMT_LEN))
++		{
++			format_ecm(er, ecmbuf, ECM_FMT_LEN);
++			cs_log_dbg(D_LB, "loadbalancer: Client: %s, requested for: %s", username(er->client), ecmbuf);
++			free(ecmbuf);
++		}
++	}
++#endif
++
++	/*
++	 * Final marking. Here we mark the best under retrylimit readers based on lb_mode.
++	 */
++	while(readers_under_retrylimit > 0)
++	{
++		// keep the best matching reader node_id here
++		uint8_t *matched_unique_id = NULL;
+ 
+-		if(s && s->rc == E_FOUND
+-			&& s->ecm_count >= cfg.lb_min_ecmcount
+-			&& (s->ecm_count <= cfg.lb_max_ecmcount || (retrylimit && s->time_avg <= retrylimit)))
++		if (!cs_malloc(&matched_unique_id, 8))
+ 		{
+-			// Reader can decode this service (rc==0) and has lb_min_ecmcount ecms:
+-			if(er->preferlocalcards && (ea->status & READER_LOCAL))
+-				{ nlocal_readers++; } // Prefer local readers!
++			break;
++		}
++
++		for (ea = er->matching_rdr; ea; ea = ea->next)
++		{
++			int32_t weight;
++
++			// skip those not marked
++			if (ea->lb_best_marked != 0xee)
++			{
++				continue;
++			}
++
++			rdr = ea->reader;
++
++			if (rdr == NULL)
++			{
++				continue;
++			}
++
++			if (!er->reader_avail)
++			{
++				continue;
++			}
++
++			s = get_stat(rdr, &q);
++
++			if (s == NULL)
++			{
++				continue;
++			}
++
++			weight = (rdr->lb_weight <= 0) ? 100 : rdr->lb_weight;
+ 
+ 			switch(cfg.lb_mode)
+ 			{
+ 				case LB_FASTEST_READER_FIRST:
+ 					current = s->time_avg * 100 / weight;
++
++					// if no prev_current stored
++					if (prev_current == -1)
++					{
++						prev_current = current;
++					}
++
++					// Priority have reader with the best ecm time
++					if (current <= prev_current)
++					{
++						memcpy(matched_unique_id, rdr->unique_id, 8);
++					}
++
++					prev_current = current;
+ 					break;
+ 
+ 				case LB_OLDEST_READER_FIRST:
+-					if(!rdr->lb_last.time)
+-						{ rdr->lb_last = check_time; }
++					if (!rdr->lb_last.time || !rdr->lb_last.millitm)
++					{
++						cs_ftimeus(&check_time);
++						rdr->lb_last = check_time;
++					}
+ 
+-					//current is negative here!
+-					current = comp_timeb(&rdr->lb_last, &check_time);
+-					current = current * weight / 100;
+-					if(!current) { current = -1; }
++					current = rdr->lb_last.time;
+ 
+-					//handle retrylimit
+-					if(retrylimit)
++					// if no prev_currentus stored
++					if (prev_current == -1)
+ 					{
+-						if(s->time_avg > retrylimit) // set lowest value for reader with time-avg>retrylimit
++						prev_current = current;
++					}
++
++					// if no prev_currentus stored
++					if (prev_currentus == -1)
++					{
++						prev_currentus = rdr->lb_last.millitm;
++					}
++
++					/*
++					 * Priority have reader used longest time ago. That mean
++					 * lower timestamp indicate longest time ago.
++					 */
++					if (current <= prev_current)
++					{
++						if (current < prev_current)
+ 						{
+-							current = s->time_avg; // in this way, it will choose best time-avg reader among the worst ones
++							// mark imediatelly
++							memcpy(matched_unique_id, rdr->unique_id, 8);
+ 						}
+ 						else
+ 						{
+-							current = current - 1; // so when all have same current, it prioritizes the one with s->time_avg<=retrylimit! This avoid a loop!
++							// current == prev_current, in that case we need to compare microtime
++							if (rdr->lb_last.millitm <= prev_currentus)
++							{
++								memcpy(matched_unique_id, rdr->unique_id, 8);
++							}
+ 						}
+ 					}
++
++					prev_current = current;
++					prev_currentus = rdr->lb_last.millitm;
+ 					break;
+ 
+ 				case LB_LOWEST_USAGELEVEL:
+ 					current = rdr->lb_usagelevel * 100 / weight;
+ 
+-					//handle retrylimit
+-					if(retrylimit)
++					// if no prev_currentus stored
++					if (prev_current == -1)
+ 					{
+-						if(s->time_avg > retrylimit)
+-							{ current = 1000; } //set lowest value for reader with time-avg>retrylimit
+-						else
+-							{ current = current - 1; } //so when all reaches retrylimit (all have lb_value=1000) or all have same current, it prioritizes the one with s->time_avg<=retrylimit! This avoid a loop!
++						prev_current = current;
+ 					}
+-					break;
+-			}
+ 
+-			if(cfg.lb_mode != LB_OLDEST_READER_FIRST) // Adjust selection to reader load:
+-			{
+-				/*if(rdr->ph.c_available && !rdr->ph.c_available(rdr, AVAIL_CHECK_LOADBALANCE, er))
+-				{
+-					current=current*2;
+-				}
++					if (current <= prev_current)
++					{
++						memcpy(matched_unique_id, rdr->unique_id, 8);
++					}
+ 
+-				if(cl && cl->pending)
+-					current=current*cl->pending;
+-				*/
+-				if(current < 1)
+-					{ current = 1; }
++					prev_current = current;
++					break;
+ 			}
+ 
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s lbvalue = %d (time-avg %d)", rdr->label, (int) llabs(current), s->time_avg);
+-
+ #if defined(WEBIF) || defined(LCDSUPPORT)
+-			rdr->lbvalue = llabs(current);
++			rdr->lbvalue = llabs(s->time_avg * 100 / weight);
+ #endif
+ 			ea->value = current;
+ 			ea->time = s->time_avg;
++
++			cs_log_dbg(D_LB, "loadbalancer: reader %s (under retrylimit search debug), unique_id: %s, lbvalue: %lld, time-avg: %d, current: %lld, current_us: %lld, ecm_count: %d",
++						 rdr->label, rdr->unique_id, llabs(s->time_avg * 100 / weight), s->time_avg, current, prev_currentus, s->ecm_count);
+ 		}
+-	}
+ 
+-	// check for local readers
+-	if(nlocal_readers > nbest_readers) // if we have local readers, we prefer them!
+-	{
+-		nlocal_readers = nbest_readers;
+-		nbest_readers = 0;
+-	}
+-	else
+-	{
+-		nbest_readers = nbest_readers - nlocal_readers;
+-	}
++		if (matched_unique_id[0] != '\0')
++		{
++			for (ea = er->matching_rdr; ea; ea = ea->next)
++			{
++				rdr = ea->reader;
+ 
+-	struct s_reader *best_rdr = NULL;
+-	struct s_reader *best_rdri = NULL;
+-	int32_t best_time = 0;
++				if (rdr == NULL)
++				{
++					continue;
++				}
+ 
+-	// Here choose nbest readers. We evaluate only readers with valid stats (they have ea->value>0, calculated above)
+-	while(1)
+-	{
+-		struct s_ecm_answer *best = NULL;
++				if (!er->reader_avail)
++				{
++					continue;
++				}
+ 
+-		for(ea = er->matching_rdr; ea; ea = ea->next)
+-		{
+-			if(nlocal_readers && !(ea->status & READER_LOCAL))
+-				{ continue; }
++				s = get_stat(rdr, &q);
+ 
+-			if(ea->value && (!best || ea->value < best->value))
+-				{ best = ea; }
+-		}
++				if (s == NULL)
++				{
++					continue;
++				}
+ 
+-		if(!best)
+-			{ break; }
++				if (memcmp(rdr->unique_id, matched_unique_id, 8) == 0)
++				{
++					// mark nbest reader
++					if (bsm < nbest_readers)
++					{
++						ea->lb_best_marked = 'U';
++						bsm += 1;
+ 
+-		best_rdri = best->reader;
+-		if(!best_rdr)
+-		{
+-			best_rdr = best_rdri;
+-			best_time = best->time;
+-		}
++						cs_log_dbg(D_LB, "loadbalancer: reader %s (under retrylimit MARKED), unique_id: %s, time-avg: %d, current: %lld, ecm_count: %d",
++							 		rdr->label, rdr->unique_id, s->time_avg, prev_current, s->ecm_count);
++					}
++					else
++					{
++						// mark fallback reader
++						if (fbm < nfb_readers)
++						{
++							ea->lb_best_marked = 'F';
++							fbm += 1;
+ 
+-		if(nlocal_readers) // primary readers, local
+-		{
+-			nlocal_readers--;
+-			reader_active++;
+-			best->status |= READER_ACTIVE;
+-			best->value = 0;
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s --> ACTIVE", best_rdri->label);
+-		}
+-		else if(nbest_readers) // primary readers, other
+-		{
+-			nbest_readers--;
+-			reader_active++;
+-			best->status |= READER_ACTIVE;
+-			best->value = 0;
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s --> ACTIVE", best_rdri->label);
++							cs_log_dbg(D_LB, "loadbalancer: reader %s (under retrylimit FB MARKED), unique_id: %s, time-avg: %d, current: %lld, ecm_count: %d",
++							 			rdr->label, rdr->unique_id, s->time_avg, prev_current, s->ecm_count);
++						}
++					}
++
++					break;
++				}
++			}
+ 		}
+-		else
+-			{ break; }
++
++		free(matched_unique_id);
++		readers_under_retrylimit -= 1;
++
+ 	}
+ 
+-	/* Here choose nfb_readers
+-	 * Select fallbacks reader until nfb_readers reached using this priority:
+-	 * 1. forced (lb_force_fallback=1) fixed fallback
+-	 * 2. "normal" fixed fallback
+-	 * 3. best ea->value remaining reader;
++	/*
++	 * Final marking. Here we mark the best over retrylimit readers based on lb_mode.
+ 	 */
+-	//check for fixed fallbacks
+-	int32_t n_fixed_fb = chk_has_fixed_fallback(er);
+-	if(n_fixed_fb)
++	while(readers_over_retrylimit > 0)
+ 	{
+-		//check before for lb_force_fallback=1 readers
+-		for(ea = er->matching_rdr; ea && nfb_readers; ea = ea->next)
++		// keep the best matching reader node_id here
++		uint8_t *matched_unique_id = NULL;
++
++		if (!cs_malloc(&matched_unique_id, 8))
+ 		{
++			break;
++		}
++
++		for (ea = er->matching_rdr; ea; ea = ea->next)
++		{
++			int32_t weight;
++
++			// skip those not marked
++			if (ea->lb_best_marked != 0xff)
++			{
++				continue;
++			}
++
+ 			rdr = ea->reader;
+-			if(chk_is_fixed_fallback(rdr, er) && rdr->lb_force_fallback && !(ea->status & READER_ACTIVE)){
+-				nfb_readers--;
+-				ea->status |= (READER_ACTIVE | READER_FALLBACK);
+-				cs_log_dbg(D_LB, "loadbalancer: reader %s --> FALLBACK (FIXED with force)", rdr->label);
++
++			if (rdr == NULL)
++			{
++				continue;
++			}
++
++			if (!er->reader_avail)
++			{
++				continue;
+ 			}
++
++			s = get_stat(rdr, &q);
++
++			if (s == NULL)
++			{
++				continue;
++			}
++
++			weight = (rdr->lb_weight <= 0) ? 100 : rdr->lb_weight;
++
++			switch(cfg.lb_mode)
++			{
++				case LB_FASTEST_READER_FIRST:
++					current = s->time_avg * 100 / weight;
++
++					// if no prev_current stored
++					if (prev_current == -1)
++					{
++						prev_current = current;
++					}
++
++					// Priority have reader with the best ecm time
++					if (current <= prev_current)
++					{
++						memcpy(matched_unique_id, rdr->unique_id, 8);
++					}
++
++					prev_current = current;
++					break;
++
++				case LB_OLDEST_READER_FIRST:
++					if (!rdr->lb_last.time || !rdr->lb_last.millitm)
++					{
++						cs_ftimeus(&check_time);
++						rdr->lb_last = check_time;
++					}
++
++					current = rdr->lb_last.time;
++
++					// if no prev_currentus stored
++					if (prev_current == -1)
++					{
++						prev_current = current;
++					}
++
++					// if no prev_currentus stored
++					if (prev_currentus == -1)
++					{
++						prev_currentus = rdr->lb_last.millitm;
++					}
++
++					/*
++					 * Priority have reader used longest time ago. That mean
++					 * lower timestamp indicate longest time ago.
++					 */
++					if (current <= prev_current)
++					{
++						if (current < prev_current)
++						{
++							// mark imediatelly
++							memcpy(matched_unique_id, rdr->unique_id, 8);
++						}
++						else
++						{
++							// current == prev_current, in that case we need to compare microtime
++							if (rdr->lb_last.millitm <= prev_currentus)
++							{
++								memcpy(matched_unique_id, rdr->unique_id, 8);
++							}
++						}
++					}
++
++					prev_current = current;
++					prev_currentus = rdr->lb_last.millitm;
++					break;
++
++				case LB_LOWEST_USAGELEVEL:
++					current = rdr->lb_usagelevel * 100 / weight;
++
++					// if no prev_currentus stored
++					if (prev_current == -1)
++					{
++						prev_current = current;
++					}
++
++					if (current <= prev_current)
++					{
++						memcpy(matched_unique_id, rdr->unique_id, 8);
++					}
++
++					prev_current = current;
++					break;
++			}
++
++#if defined(WEBIF) || defined(LCDSUPPORT)
++			rdr->lbvalue = llabs(s->time_avg * 100 / weight);
++#endif
++			ea->value = current;
++			ea->time = s->time_avg;
++
++			cs_log_dbg(D_LB, "loadbalancer: reader %s (over retrylimit search debug), unique_id: %s, lbvalue: %lld, time-avg: %d, current: %lld, current_us: %lld, ecm_count: %d",
++						 rdr->label, rdr->unique_id, llabs(s->time_avg * 100 / weight), s->time_avg, current, prev_currentus, s->ecm_count);
+ 		}
+ 
+-		//check for "normal" fixed fallback with valid stats
+-		for(ea = er->matching_rdr; ea && nfb_readers; ea = ea->next)
++		if (matched_unique_id[0] != '\0')
+ 		{
+-			rdr = ea->reader;
+-			if(chk_is_fixed_fallback(rdr, er) && !rdr->lb_force_fallback && !(ea->status & READER_ACTIVE)){
++			for (ea = er->matching_rdr; ea; ea = ea->next)
++			{
++				rdr = ea->reader;
++
++				if (rdr == NULL)
++				{
++					continue;
++				}
++
++				if (!er->reader_avail)
++				{
++					continue;
++				}
+ 
+ 				s = get_stat(rdr, &q);
+-				if(s && s->rc == E_FOUND
+-					&& s->ecm_count >= cfg.lb_min_ecmcount
+-					&& (s->ecm_count <= cfg.lb_max_ecmcount || (retrylimit && s->time_avg <= retrylimit)))
++
++				if (s == NULL)
+ 				{
+-					nfb_readers--;
+-					ea->status |= (READER_ACTIVE | READER_FALLBACK);
+-					cs_log_dbg(D_LB, "loadbalancer: reader %s --> FALLBACK (FIXED)", rdr->label);
++					continue;
+ 				}
+-			}
+-		}
+-	}
+ 
+-	//check for remaining best ea->value readers as fallbacks
+-	while(nfb_readers)
+-	{
+-		struct s_ecm_answer *best = NULL;
++				if (memcmp(rdr->unique_id, matched_unique_id, 8) == 0)
++				{
++					// mark nbest reader
++					if (bsm < nbest_readers)
++					{
++						ea->lb_best_marked = 'O';
++						bsm += 1;
+ 
+-		for(ea = er->matching_rdr; ea; ea = ea->next)
+-		{
+-			if((ea->status & READER_ACTIVE))
+-				{ continue; }
++						cs_log_dbg(D_LB, "loadbalancer: reader %s (over retrylimit MARKED), unique_id: %s, time-avg: %d, current: %lld, ecm_count: %d",
++							 		rdr->label, rdr->unique_id, s->time_avg, prev_current, s->ecm_count);
++					}
++					else
++					{
++						// mark fallback reader
++						if (fbm < nfb_readers)
++						{
++							ea->lb_best_marked = 'G';
++							fbm += 1;
+ 
+-			if(ea->value && (!best || ea->value < best->value))
+-				{ best = ea; }
++							cs_log_dbg(D_LB, "loadbalancer: reader %s (over retrylimit FB MARKED), unique_id: %s, time-avg: %d, current: %lld, ecm_count: %d",
++							 			rdr->label, rdr->unique_id, s->time_avg, prev_current, s->ecm_count);
++						}
++					}
++
++					break;
++				}
++			}
+ 		}
+-		if(!best)
+-			{ break; }
+ 
+-		nfb_readers--;
+-		best->status |= (READER_ACTIVE | READER_FALLBACK);
+-		best->value = 0;
+-		cs_log_dbg(D_LB, "loadbalancer: reader %s --> FALLBACK", best->reader->label);
++		free(matched_unique_id);
++		readers_over_retrylimit -= 1;
+ 	}
+-	// end fallback readers
+ 
+-	// ACTIVE readers with no stats, or with no lb_min_ecmcount, or lb_max_ecmcount reached --> NO use max_reopen for these readers, always open!
+-	for(ea = er->matching_rdr; ea; ea = ea->next)
++	/*
++	 * Activate readers with not enought ecm count or no stats.
++	 * Reset statistics if reader exceed max ecm count.
++	 * Activate prefer local cards readers.
++	 * Activate nbest marked readers and take care to lb_nok_tolerance.
++	 * Activate fallback readers.
++	 */
++	for (ea = er->matching_rdr; ea; ea = ea->next)
+ 	{
+ 		rdr = ea->reader;
+-		s = get_stat(rdr, &q);
+ 
+-#ifdef CS_CACHEEX
+-		// if cacheex reader, always active and no stats
+-		if(rdr->cacheex.mode == 1)
++		if (rdr == NULL)
+ 		{
+-			ea->status |= READER_ACTIVE;
+ 			continue;
+ 		}
+-#endif
+-		// ignore fixed fallback with lb_force_fallback=1: no need stats, always used as fallaback!
+-		if(chk_is_fixed_fallback(rdr, er) && rdr->lb_force_fallback)
+-			continue;
+ 
+-		// active readers with no stats
+-		if(!s)
++		if (!er->reader_avail)
+ 		{
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s need starting statistics --> ACTIVE", rdr->label);
+-			ea->status |= READER_ACTIVE;
+-			reader_active++;
+ 			continue;
+ 		}
+ 
+-		// active readers with no lb_min_ecmcount reached
+-		if(s->rc == E_FOUND && s->ecm_count < cfg.lb_min_ecmcount)
++		s = get_stat(rdr, &q);
++
++		// readers without stats must be active. (there is only one problem, those readers is outside lodbalance!)
++		if (s == NULL)
+ 		{
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s needs to reach lb_min_ecmcount(%d), now %d --> ACTIVE", rdr->label, cfg.lb_min_ecmcount, s->ecm_count);
++			// Readers with no stats must be activated & we not count them in readers_active!
++			cs_log_dbg(D_LB, "loadbalancer: reader %s need starting statistics for caid:prid:srvid:chid(%04X:%06X:%04X:%04X) --> ACTIVE", rdr->label, q.caid, q.prid, q.srvid, q.chid);
+ 			ea->status |= READER_ACTIVE;
+-			reader_active++;
+ 			continue;
+ 		}
+ 
+-		// reset stats and active readers reach cfg.lb_max_ecmcount and time_avg > retrylimit.
+-		if(s->rc == E_FOUND && s->ecm_count > cfg.lb_max_ecmcount && (!retrylimit || s->time_avg > retrylimit))
++		/*
++		 * Activate reader if not reached min ecm count. We not increase readers_active count here
++		 * because we need space for best marked readers! We unmark best marked with less ecm count
++		 * than min ecm count.
++		 */
++		if (s->ecm_count < cfg.lb_min_ecmcount)
+ 		{
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s reaches max ecms (%d), resetting statistics --> ACTIVE", rdr->label, cfg.lb_max_ecmcount);
+-			reset_ecmcount_reader(s, rdr); // ecm_count=0
+-			reset_avgtime_reader(s, rdr); // time_avg=0
++			cs_log_dbg(D_LB, "loadbalancer: reader %s, ecm_count: %d, not reached lb_min_ecmcount: %d --> ACTIVE", rdr->label, s->ecm_count, cfg.lb_min_ecmcount);
+ 			ea->status |= READER_ACTIVE;
+-			reader_active++;
++			s->fail_factor = 0; // yes!
++			ea->lb_best_marked = 0;
+ 			continue;
+ 		}
+ 
+-		struct timeb now;
+-		cs_ftime(&now);
+-		int64_t gone = comp_timeb(&now, &s->last_received);
+-		// reset avg-time and active reader with s->last_received older than 5 min and avg-time>retrylimit
+-		if(retrylimit && s->rc == E_FOUND && (gone >= 300*1000) && s->time_avg > retrylimit)
++		/*
++		 * We should reset reader stats in case max ecm count reached.
++		 * We can't activate reader right now after we reset stats, will activate them later.
++		 */
++		if (s->ecm_count > cfg.lb_max_ecmcount)
+ 		{
+-			cs_log_dbg(D_LB, "loadbalancer: reader %s has time-avg>retrylimit and last received older than 5 minutes, resetting avg-time --> ACTIVE", rdr->label);
++			cs_log_dbg(D_LB, "loadbalancer: reader %s, ecm_count: %d, reaches lb_max_ecmcount: %d, resetting statistics --> NOT ACTIVE", rdr->label, s->ecm_count, cfg.lb_max_ecmcount);
++			reset_ecmcount_reader(s, rdr); // ecm_count=0
+ 			reset_avgtime_reader(s, rdr); // time_avg=0
+-			ea->status &= ~(READER_ACTIVE | READER_FALLBACK); // It could be activated as fallback above because has lb_vlaue>0, so remove fallback state!
+-			ea->status |= READER_ACTIVE;
+-			reader_active++;
++			s->fail_factor = 0; // yes!
++			ea->lb_best_marked = 0;
+ 			continue;
+ 		}
+-	}
+ 
+-	int32_t force_reopen = 0;
++		// just warn
++		if (readers_active == nbest_readers)
++		{
++			cs_log_dbg(D_LB, "loadbalancer: reader %s reached nbest readers (%d) -> NOT ACTIVE", rdr->label, nbest_readers);
++		}
+ 
+-	//no reader active --> force to reopen matching readers
+-	if(reader_active == 0)
+-	{
+-		cs_log_dbg(D_LB, "loadbalancer: NO VALID MATCHING READER FOUND!");
+-		force_reopen = 1;
+-	}
+-	else if(retrylimit)
+-	{
+ 		/*
+-		 * check for lbretrylimit!
+-		 *
+-		 * if best_time > retrylimit we need to reset avg times of all computed above matching readers, so we can re-evaluated lbvalue!
+-		 * More, we force open blocked reader!
+-		*/
+-		int32_t retrylimit_reached = best_time && best_time > retrylimit;
+-		if(retrylimit_reached)
+-		{
+-			cs_log_dbg(D_LB, "loadbalancer: best reader %s (avg_time %d ms) reaches RETRYLIMIT (%d ms), resetting avg times and ACTIVE all (valid and blocked) matching readers!", best_rdr->label, best_time, retrylimit);
+-			for(ea = er->matching_rdr; ea; ea = ea->next)
++		 * Prefer localcards flaged readers have priority!
++		 * Activate best under marked local readers if there is some free space for more nbest readers
++		 */
++		if (ea->lb_best_marked == 'U' && s->fail_factor >= 0 && er->preferlocalcards && (ea->status & READER_LOCAL) && readers_active < nbest_readers)
++		{
++			tol_calc_f = ((s->fail_factor + 0.0) / (s->ecm_count + 0.0)) * 100.0;
++			tol_calc = (uint32_t)(tol_calc_f * 1000 + 0.5);
++			tol_calc = (tol_calc - (tol_calc % 1000)) / 1000;
++
++			/*
++			 * Threat reader with lb_nok_tolerance parameter
++			 * ---------------------------------------------
++			 * All those readers which exceed lb_nok_tolerance is blocked, if you need 100 percent ECM OK you should set lb_nok_tolerance to 100%
++			 * but do in mind than if 1 NOK than reader will go blocked for lb_reopen_secconds time! So setup lb_nok_tolerance parameter
++			 * per your like!
++			 */
++			if (tol_calc <= (uint32_t)cfg.lb_nok_tolerance)
+ 			{
+-				rdr = ea->reader;
+-#ifdef CS_CACHEEX
+-				if(rdr->cacheex.mode == 1) { continue; }
+-#endif
+-				s = get_stat(rdr, &q);
++				ea->status |= READER_ACTIVE;
+ 
+-				//reset avg time and ACTIVE all valid lbvalue readers
+-				if(s && s->rc == E_FOUND
+-					&& s->ecm_count >= cfg.lb_min_ecmcount
+-					&& (s->ecm_count <= cfg.lb_max_ecmcount || s->time_avg <= retrylimit))
+-				{
+-					if((ea->status & READER_FALLBACK)) { cs_log_dbg(D_LB, "loadbalancer: reader %s selected as FALLBACK --> ACTIVE", rdr->label); }
+-					else if(!(ea->status & READER_ACTIVE)) { cs_log_dbg(D_LB, "loadbalancer: reader %s --> ACTIVE", rdr->label); }
+-					ea->status &= ~(READER_ACTIVE | READER_FALLBACK); //remove active and fallback
+-					ea->status |= READER_ACTIVE; //add active
+-					reset_avgtime_reader(s, rdr);
+-				}
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (under retrylimit, prefer local), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d (lb_nok_tolerance: %d) --> ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
+ 
+-				//reset avg time all blocked "valid" readers. We active them by force_reopen=1
+-				if(s && s->rc != E_FOUND)
+-				{
+-					reset_avgtime_reader(s, rdr);
+-				}
++				readers_active += 1;
++			}
++			else
++			{
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (under retrylimit, prefer local), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d reached (lb_nok_tolerance: %d) --> NOT ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
++			}
+ 
++			continue;
++		}
++
++		/*
++		 * Prefer localcards flaged readers have priority!
++		 * Activate best over marked local readers if there is some free space for more nbest readers
++		 */
++		if (ea->lb_best_marked == 'O' && s->fail_factor >= 0 && er->preferlocalcards && (ea->status & READER_LOCAL) && readers_active < nbest_readers)
++		{
++			tol_calc_f = ((s->fail_factor + 0.0) / (s->ecm_count + 0.0)) * 100.0;
++			tol_calc = (uint32_t)(tol_calc_f * 1000 + 0.5);
++			tol_calc = (tol_calc - (tol_calc % 1000)) / 1000;
++
++			/*
++			 * Threat reader with lb_nok_tolerance parameter
++			 * ---------------------------------------------
++			 * All those readers which exceed lb_nok_tolerance is blocked, if you need 100 percent ECM OK you should set lb_nok_tolerance to 100%
++			 * but do in mind than if 1 NOK than reader will go blocked for lb_reopen_secconds time! So setup lb_nok_tolerance parameter
++			 * per your like!
++			 */
++			if (tol_calc <= (uint32_t)cfg.lb_nok_tolerance)
++			{
++				ea->status |= READER_ACTIVE;
++
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (over retrylimit, prefer local), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d (lb_nok_tolerance: %d) --> ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
++
++				readers_active += 1;
++			}
++			else
++			{
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (over retrylimit, prefer local), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d reached (lb_nok_tolerance: %d) --> NOT ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
+ 			}
+-			force_reopen = 1; //force reopen blocked readers
++
++			continue;
+ 		}
+-	}
+ 
+-	//try to reopen max_reopen blocked readers (readers with last ecm not "e_found"); if force_reopen=1, force reopen valid blocked readers!
+-	try_open_blocked_readers(er, &q, &max_reopen, &force_reopen);
++		// Activate best under marked readers if there is some free space for more nbest readers
++		if (ea->lb_best_marked == 'U' && s->fail_factor >= 0 && readers_active < nbest_readers)
++		{
++			tol_calc_f = ((s->fail_factor + 0.0) / (s->ecm_count + 0.0)) * 100.0;
++			tol_calc = (uint32_t)(tol_calc_f * 1000 + 0.5);
++			tol_calc = (tol_calc - (tol_calc % 1000)) / 1000;
++
++			/*
++			 * Threat reader with lb_nok_tolerance parameter
++			 * ---------------------------------------------
++			 * All those readers which exceed lb_nok_tolerance is blocked, if you need 100 percent ECM OK you should set lb_nok_tolerance to 100%
++			 * but do in mind than if 1 NOK than reader will go blocked for lb_reopen_secconds time! So setup lb_nok_tolerance parameter
++			 * per your like!
++			 */
++			if (tol_calc <= (uint32_t)cfg.lb_nok_tolerance)
++			{
++				ea->status |= READER_ACTIVE;
+ 
+-	cs_log_dbg(D_LB, "loadbalancer: --------------------------------------------");
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (under retrylimit), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d (lb_nok_tolerance: %d) --> ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
+ 
+-#ifdef WITH_DEBUG
+-	if(cs_dblevel & D_LB)
+-	{
+-		//loadbalancer debug output:
+-		int32_t nr = 0;
+-		char buf[512];
+-		int32_t l = 512;
+-		char *rptr = buf;
+-		*rptr = 0;
+-		int32_t n = 0;
++				readers_active += 1;
++			}
++			else
++			{
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (under retrylimit), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d reached (lb_nok_tolerance: %d) --> NOT ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
++			}
+ 
+-		for(ea = er->matching_rdr; ea; ea = ea->next)
++			continue;
++		}
++
++		// Activate best over marked readers if there is some free space for more nbest readers
++		if (ea->lb_best_marked == 'O' && s->fail_factor >= 0 && readers_active < nbest_readers)
+ 		{
+-			if(!(ea->status & READER_ACTIVE))
+-				{ continue; }
++			tol_calc_f = ((s->fail_factor + 0.0) / (s->ecm_count + 0.0)) * 100.0;
++			tol_calc = (uint32_t)(tol_calc_f * 1000 + 0.5);
++			tol_calc = (tol_calc - (tol_calc % 1000)) / 1000;
++
++			/*
++			 * Threat reader with lb_nok_tolerance parameter
++			 * ---------------------------------------------
++			 * All those readers which exceed lb_nok_tolerance is blocked, if you need 100 percent ECM OK you should set lb_nok_tolerance to 100%
++			 * but do in mind than if 1 NOK than reader will go blocked for lb_reopen_secconds time! So setup lb_nok_tolerance parameter
++			 * per your like!
++			 */
++			if (tol_calc <= (uint32_t)cfg.lb_nok_tolerance)
++			{
++				ea->status |= READER_ACTIVE;
+ 
+-			nr++;
+-			if(nr > 5) { continue; }
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (over retrylimit), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d (lb_nok_tolerance: %d) --> ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
+ 
+-			if(!(ea->status & READER_FALLBACK))
+-				{ n = snprintf(rptr, l, "%s%s%s ", ea->reader->label, (ea->status & READER_CACHEEX) ? "*" : "", (ea->status & READER_LOCAL) ? "L" : ""); }
++				readers_active += 1;
++			}
+ 			else
+-				{ n = snprintf(rptr, l, "[%s%s%s] ", ea->reader->label, (ea->status & READER_CACHEEX) ? "*" : "", (ea->status & READER_LOCAL) ? "L" : ""); }
+-			rptr += n;
+-			l -= n;
++			{
++				cs_log_dbg(D_LB, "loadbalancer: reader: %s (over retrylimit), ecmcount: %d (min=%d, max=%d), fail_factor: %d, time-avg: %d, tolerance: %d reached (lb_nok_tolerance: %d) --> NOT ACTIVE",
++									 rdr->label, s->ecm_count, cfg.lb_min_ecmcount, cfg.lb_max_ecmcount, s->fail_factor, s->time_avg, tol_calc, cfg.lb_nok_tolerance);
++			}
++
++			continue;
++		}
++
++		/*
++		 * Fallbacks readers
++		 * ------------------
++		 * Select fallbacks readers priority:
++		 * 1. forced (lb_force_fallback=1) fixed fallback
++		 * 2. "normal" fixed fallback
++		 * 3. best ea->value remaining reader
++		 */
++
++		// Check for fixed fallbacks
++		int32_t n_fixed_fb = chk_has_fixed_fallback(er);
++
++		// Check first for lb_force_fallback=1 readers. No need stats!
++		if (chk_is_fixed_fallback(rdr, er) && rdr->lb_force_fallback && n_fixed_fb && nfb_readers)
++		{
++			ea->status |= (READER_ACTIVE | READER_FALLBACK);
++			cs_log_dbg(D_LB, "loadbalancer: reader %s (FIXED with force) --> FALLBACK", rdr->label);
++			nfb_readers -= 1;
++			fb_readers_active += 1;
++			continue;
+ 		}
+ 
+-		if(nr > 5)
+-			{ snprintf(rptr, l, "...(%d more)", nr - 5); }
++		// Check for "normal" fixed fallback
++		if (s->rc == E_FOUND && chk_is_fixed_fallback(rdr, er) && !rdr->lb_force_fallback && n_fixed_fb && nfb_readers)
++		{
++			ea->status |= (READER_ACTIVE | READER_FALLBACK);
++			cs_log_dbg(D_LB, "loadbalancer: reader %s (FIXED) --> FALLBACK", rdr->label);
++			nfb_readers -= 1;
++			fb_readers_active += 1;
++			continue;
++		}
+ 
+-		if(cs_dblevel & D_LB)
++		// Mark the rest best readers as a fallback (under retrylimit marked) if there is a free space
++		if (s->rc == E_FOUND && ea->lb_best_marked == 'F' && nfb_readers)
+ 		{
+-			char ecmbuf[ECM_FMT_LEN];
+-			format_ecm(er, ecmbuf, ECM_FMT_LEN);
++			ea->status |= (READER_ACTIVE | READER_FALLBACK);
++			cs_log_dbg(D_LB, "loadbalancer: reader %s (under retrylimit) --> FALLBACK", rdr->label);
++			nfb_readers -= 1;
++			fb_readers_active += 1;
++		}
+ 
+-			cs_log_dbg(D_LB, "loadbalancer: client %s for %s: n=%d selected readers: %s",
+-						username(er->client), ecmbuf, nr, buf);
++		// Mark the rest best readers as a fallback (over retrylimit marked) if there is a free space
++		if (s->rc == E_FOUND && ea->lb_best_marked == 'G' && nfb_readers)
++		{
++			ea->status |= (READER_ACTIVE | READER_FALLBACK);
++			cs_log_dbg(D_LB, "loadbalancer: reader %s (over retrylimit) --> FALLBACK", rdr->label);
++			nfb_readers -= 1;
++			fb_readers_active += 1;
+ 		}
+ 	}
+-#endif
++
++	// In case no active readers we need to force reopen all the readers
++	if (readers_active == 0 && fb_readers_active == 0)
++	{
++		cs_log_dbg(D_LB, "loadbalancer: NO VALID MATCHING READER FOUND!");
++		force_reopen = 1;
++	}
++
++	// Here we can try to reopen blocked nbest readers; if force_reopen=1, force reopen blocked readers!
++	try_open_blocked_readers(er, &q, nbest_readers, force_reopen);
++
++	cs_log_dbg(D_LB, "loadbalancer: --------------------------------------------");
++
+ 	return;
+ }
+ 

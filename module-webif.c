@@ -55,6 +55,8 @@ pthread_key_t getssl;
 static CS_MUTEX_LOCK http_lock;
 CS_MUTEX_LOCK *lock_cs;
 
+static void webif_add_client_proto(struct templatevars *vars, struct s_client *cl, const char *proto, int8_t apicall);
+
 static uint8_t useLocal = 1;
 #define PRINTF_LOCAL_D useLocal ? "%'d" : "%d"
 #define PRINTF_LOCAL_F useLocal ? "%'.0f" : "%.0f"
@@ -671,7 +673,6 @@ static char *send_oscam_config_global(struct templatevars *vars, struct uriparam
 	tpl_printf(vars, TPLADD, "FALLBACKTIMEOUT", "%u", cfg.ftimeout);
 	tpl_printf(vars, TPLADD, "CLIENTMAXIDLE", "%u", cfg.cmaxidle);
 
-
 	value = mk_t_caidvaluetab(&cfg.ftimeouttab);
 	tpl_addVar(vars, TPLADD, "FALLBACKTIMEOUT_PERCAID", value);
 	free_mk_t(value);
@@ -820,6 +821,7 @@ static char *send_oscam_config_loadbalancer(struct templatevars *vars, struct ur
 	free_mk_t(value);
 
 	tpl_printf(vars, TPLADD, "LBREOPENSECONDS", "%d", cfg.lb_reopen_seconds);
+	tpl_printf(vars, TPLADD, "LBNOKTOLERANCE", "%d", cfg.lb_nok_tolerance);
 	tpl_printf(vars, TPLADD, "LBCLEANUP", "%d", cfg.lb_stat_cleanup);
 
 	tpl_addVar(vars, TPLADD, "LBREOPENINVALID", (cfg.lb_reopen_invalid == 1) ? "checked" : "");
@@ -2029,34 +2031,113 @@ static char *send_oscam_reader(struct templatevars *vars, struct uriparams *para
 			{
 				tpl_printf(vars, TPLAPPEND, "EXISTING_INS", ",'%s'", urlencode(vars, rdr->label));
 			}
-#ifdef CS_CACHEEX_AIO
-			if(rdr->cacheex.feature_bitfield)
-			{
-				tpl_addVar(vars, TPLADD, "CTYPSORT", (const char*)new_proto);
-				tpl_addVar(vars, TPLADD, "CTYP", (const char*)new_proto);
 
-				if(rdr->cacheex.feature_bitfield & 32)
-					tpl_addVar(vars, TPLADD, "CLIENTPROTOTITLE", rdr->cacheex.aio_version);
-				else if(cl->reader->cacheex.feature_bitfield)
-					tpl_addVar(vars, TPLADD, "CLIENTPROTOTITLE", "[cx-aio < 9.2.3]");
-				else
-					tpl_addVar(vars, TPLADD, "CLIENTPROTOTITLE", "");
-			}
-			else
-			{
-				tpl_addVar(vars, TPLADD, "CTYPSORT", proto);
-				tpl_addVar(vars, TPLADD, "CTYP", proto);
-			}
-#else
-			tpl_addVar(vars, TPLADD, "CTYP", reader_get_type_desc(rdr, 0));
-			tpl_addVar(vars, TPLADD, "CTYPSORT", reader_get_type_desc(rdr, 0));
-#endif
 			tpl_addVar(vars, TPLADD, "READERCLASS", rdr->enable ? "enabledreader" : "disabledreader");
 
 			if(rdr->enable) { active_readers += 1; }
 			else { disabled_readers += 1; }
 
-			if(rdr->tcp_connected) { connected_readers += 1; }
+			if(rdr->tcp_connected)
+			{
+				connected_readers += 1;
+				webif_add_client_proto(vars, rdr->client, client_get_proto(rdr->client), apicall);
+
+				switch(rdr->card_status)
+				{
+					case CARD_INSERTED:
+						tpl_addVar(vars, TPLADD, "RSTATUS", "online");
+						tpl_addVar(vars, TPLADD, "READERCLASS", "r_connected");
+						break;
+
+					case NO_CARD:
+					case UNKNOWN:
+					case READER_DEVICE_ERROR:
+					case CARD_NEED_INIT:
+					case CARD_FAILURE:
+					default:
+						tpl_addVar(vars, TPLADD, "RSTATUS", "connected");
+						tpl_addVar(vars, TPLADD, "READERCLASS", "r_undefined");
+						break;
+				}
+
+				tpl_addVar(vars, TPLADD, "READERIP", cs_inet_ntoa(rdr->client->ip));
+			}
+			else
+			{
+				/* default initial values */
+				tpl_addVar(vars, TPLADDONCE, "RSTATUS", "offline");
+				tpl_addVar(vars, TPLADDONCE, "READERIP", "");
+				tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "");
+				tpl_addVar(vars, TPLADDONCE, "CLIENTPROTOSORT", "");
+				tpl_addVar(vars, TPLADDONCE, "CLIENTPROTOTITLE", "");
+				tpl_addVar(vars, TPLADDONCE, "PROTOICON", "");
+
+				if(!is_network_reader(rdr) && rdr->enable)
+				{
+					connected_readers += 1;
+					tpl_addVar(vars, TPLADDONCE, "RSTATUS", "active");
+					tpl_addVar(vars, TPLADD, "READERCLASS", "r_connected");
+
+					switch(rdr->typ)
+					{
+						case R_CONSTCW:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "constcw");
+							break;
+
+						case R_DB2COM1:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "db2com1");
+							break;
+
+						case R_DB2COM2:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "db2com2");
+							break;
+
+						case R_MOUSE:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "mouse");
+							break;
+
+						case R_DRECAS:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "drecas");
+							break;
+
+						case R_MP35:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "mp35");
+							break;
+
+						case R_SC8in1:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "sc8in1");
+							break;
+
+						case R_SMART:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "smart");
+							break;
+
+						case R_INTERNAL:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "internal");
+							break;
+
+						case R_SERIAL:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "serial");
+							break;
+
+						case R_PCSC:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "pcsc");
+							break;
+
+						case R_EMU:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "emu");
+							break;
+
+						case R_CS378X:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "cs378x");
+							break;
+
+						default:
+							tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "unknown");
+							break;
+					}
+				}
+			}
 
 			if(rdr->description)
 				tpl_printf(vars, TPLADD, "DESCRIPTION","%s(%s)",!apicall?"&#13;":"",xml_encode(vars, rdr->description));
@@ -2438,7 +2519,7 @@ static char *send_oscam_reader_config(struct templatevars *vars, struct uriparam
 	free_mk_t(value);
 
 #ifdef WITH_LB
-		tpl_addVar(vars, TPLADD, "LBFORCEFALLBACK", (rdr->lb_force_fallback == 1) ? "checked" : "");
+	tpl_addVar(vars, TPLADD, "LBFORCEFALLBACK", (rdr->lb_force_fallback == 1) ? "checked" : "");
 #endif
 
 #ifdef CS_CACHEEX
@@ -4074,6 +4155,8 @@ static char *send_oscam_user_config_edit(struct templatevars *vars, struct uripa
 
 static void webif_add_client_proto(struct templatevars *vars, struct s_client *cl, const char *proto, int8_t apicall)
 {
+	char mcs_ver[16];
+
 	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", "");
 	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTOSORT", "");
 	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTOTITLE", "");
@@ -4087,18 +4170,18 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 		if(cfg.http_showpicons )
 		{
 			char picon_name[32];
-			snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s_%s", (char *)proto, newcamd_get_client_name(cl->ncd_client_id));
+			snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s_%s", proto, newcamd_get_client_name(cl->ncd_client_id));
 			if(picon_exists(picon_name))
 			{
 				if (!apicall)
 				{
-					tpl_addVar(vars, TPLADD, "NCMDA", (char *)proto);
-					tpl_addVar(vars, TPLADD, "NCMDB", (char *)newcamd_get_client_name(cl->ncd_client_id));
+					tpl_addVar(vars, TPLADD, "NCMDA", proto);
+					tpl_addVar(vars, TPLADD, "NCMDB", newcamd_get_client_name(cl->ncd_client_id));
 					tpl_addVar(vars, TPLADD, "CLIENTPROTO", tpl_getTpl(vars, "PROTONEWCAMDPIC"));
 				}
 				else
 				{
-					tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s_%s",(char *)proto, (char *)newcamd_get_client_name(cl->ncd_client_id));
+					tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s_%s", proto, newcamd_get_client_name(cl->ncd_client_id));
 				}
 			}
 			else
@@ -4115,11 +4198,43 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 		struct cc_data *cc = cl->cc;
 		if(cc && *cc->remote_version && *cc->remote_build)
 		{
+			memset(mcs_ver, 0, sizeof(mcs_ver));
+			mcs_ver[0] = 0x30; // version 0
+
+			if (cc->multics_version[0] | (cc->multics_version[1] << 8))
+			{
+				switch(cc->multics_mode)
+				{
+					case 2:
+						snprintf(mcs_ver, sizeof(mcs_ver), "%d", cc->multics_version[0] | (cc->multics_version[1] << 8));
+						break;
+
+					case 3:
+						snprintf(mcs_ver, sizeof(mcs_ver), "%d_HB", cc->multics_version[0] | (cc->multics_version[1] << 8));
+						break;
+
+					default:
+						break;
+				}
+			}
+
 			tpl_printf(vars, TPLADD, "CLIENTPROTO", "%s (%s-%s)", proto, cc->remote_version, cc->remote_build);
 			tpl_printf(vars, TPLADD, "CLIENTPROTOSORT", "%s (%s-%s)", proto, cc->remote_version, cc->remote_build);
 			if(cccam_client_multics_mode(cl))
 			{
-				tpl_printf(vars, TPLADD, "CLIENTPROTOTITLE", "Multics, revision r%d", cc->multics_version[0] | (cc->multics_version[1] << 8));
+				switch(cc->multics_mode)
+				{
+					case 2:
+						tpl_printf(vars, TPLADD, "CLIENTPROTOTITLE", "Multics, revision r%s", mcs_ver);
+						break;
+
+					case 3:
+						tpl_printf(vars, TPLADD, "CLIENTPROTOTITLE", "Multics Hellboy, revision r%s", mcs_ver);
+						break;
+
+					default:
+						break;
+				}
 			}
 			else
 			{
@@ -4173,26 +4288,25 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 				switch(is_other_proto)
 				{
 					case 1:
-						snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s_r_%d", proto, cc->multics_version[0] | (cc->multics_version[1] << 8));
+						snprintf(picon_name, sizeof(picon_name) / sizeof(char) - 1, "%s_r_%s", proto, mcs_ver);
 						if(picon_exists(picon_name))
 						{
 							if (!apicall)
 							{
-								tpl_addVar(vars, TPLADD, "CCA", (char *)proto);
+								tpl_addVar(vars, TPLADD, "CCA", proto);
 								tpl_addVar(vars, TPLADD, "CCB", "r");
-								tpl_printf(vars, TPLADD, "CCC", "%d", cc->multics_version[0] | (cc->multics_version[1] << 8));
+								tpl_printf(vars, TPLADD, "CCC", "%s", mcs_ver);
 								tpl_addVar(vars, TPLADD, "CCD", "");
 								tpl_addVar(vars, TPLADD, "CLIENTPROTO", tpl_getTpl(vars, "PROTOCCCAMPIC"));
 							}
 							else
 							{
-								tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s_r_%d",(char *)proto, cc->multics_version[0] | (cc->multics_version[1] << 8));
-							}
+								tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s_r_%s", proto, mcs_ver);							}
 						}
 						else
 						{
-							tpl_printf(vars, TPLADD, "CLIENTPROTOTITLE", "Multics, revision r%d missing icon: IC_%s_r_%d.tpl",
-								cc->multics_version[0] | (cc->multics_version[1] << 8), proto, cc->multics_version[0] | (cc->multics_version[1] << 8));
+							tpl_printf(vars, TPLADD, "CLIENTPROTOTITLE", "Multics, revision r%s missing icon: IC_%s_r_%s.tpl",
+								mcs_ver, proto, mcs_ver);
 						}
 						break;
 
@@ -4202,7 +4316,7 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 						{
 							if (!apicall)
 							{
-								tpl_addVar(vars, TPLADD, "CCA", (char *)proto);
+								tpl_addVar(vars, TPLADD, "CCA", proto);
 								tpl_addVar(vars, TPLADD, "CCB", cc->remote_version);
 								tpl_addVar(vars, TPLADD, "CCC", cc->remote_build);
 #ifdef CS_CACHEEX_AIO
@@ -4243,7 +4357,7 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 							}
 							else
 							{
-								tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s_%s_%s",(char *)proto, cc->remote_version, cc->remote_build);
+								tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s_%s_%s", proto, cc->remote_version, cc->remote_build);
 							}
 						}
 						else
@@ -4400,8 +4514,8 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 		return;
 	}
 #endif
-	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", (char *)proto);
-	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTOSORT", (char *)proto);
+	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTO", proto);
+	tpl_addVar(vars, TPLADDONCE, "CLIENTPROTOSORT", proto);
 	if(cfg.http_showpicons)
 	{
 		char picon_name[32];
@@ -4410,12 +4524,12 @@ static void webif_add_client_proto(struct templatevars *vars, struct s_client *c
 		{
 			if (!apicall)
 			{
-				tpl_addVar(vars, TPLADD, "OTHER", (char *)proto);
+				tpl_addVar(vars, TPLADD, "OTHER", proto);
 				tpl_addVar(vars, TPLADD, "CLIENTPROTO", tpl_getTpl(vars, "PROTOOTHERPIC"));
 			}
 			else
 			{
-				tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s",(char *)proto);
+				tpl_printf(vars, TPLADDONCE, "PROTOICON", "%s", proto);
 			}
 		}
 		else

@@ -308,6 +308,13 @@ void global_fixups_fn(void *UNUSED(var))
 #ifdef WITH_LB
 	if(cfg.lb_save > 0 && cfg.lb_save < 100) { cfg.lb_save = 100; }
 	if(cfg.lb_nbest_readers < 2) { cfg.lb_nbest_readers = DEFAULT_NBEST; }
+	if(cfg.lb_max_readers > 0)
+	{
+		// make sure it is excatly the same as the sum of the nfb and nbest readers
+		cfg.lb_max_readers = (cfg.lb_nbest_readers + cfg.lb_nfb_readers);
+	}
+	if(cfg.lb_nok_tolerance <= 1) { cfg.lb_nok_tolerance = 1; }
+	if(cfg.lb_nok_tolerance > 100) { cfg.lb_nok_tolerance = 100; }
 #endif
 }
 
@@ -371,6 +378,7 @@ static const struct config_list global_opts[] =
 	DEF_OPT_INT32("lb_min_ecmcount"                , OFS(lb_min_ecmcount)               , DEFAULT_MIN_ECM_COUNT),
 	DEF_OPT_INT32("lb_max_ecmcount"                , OFS(lb_max_ecmcount)               , DEFAULT_MAX_ECM_COUNT),
 	DEF_OPT_INT32("lb_reopen_seconds"              , OFS(lb_reopen_seconds)             , DEFAULT_REOPEN_SECONDS),
+	DEF_OPT_INT32("lb_nok_tolerance"                , OFS(lb_nok_tolerance)               , DEFAULT_NOK_TOLERANCE),
 	DEF_OPT_INT8("lb_reopen_invalid"               , OFS(lb_reopen_invalid)             , 1),
 	DEF_OPT_INT8("lb_force_reopen_always"          , OFS(lb_force_reopen_always)        , 0),
 	DEF_OPT_INT32("lb_retrylimit"                  , OFS(lb_retrylimit)                 , DEFAULT_RETRYLIMIT),

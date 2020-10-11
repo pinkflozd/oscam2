@@ -196,15 +196,6 @@ void increment_n_request(struct s_client *cl)
 	}
 }
 
-uint8_t checkCWpart(uint8_t *cw, int8_t part)
-{
-	uint8_t eo = part ? 8 : 0;
-	int8_t i;
-	for(i = 0; i < 8; i++)
-		if(cw[i + eo]) { return 1; }
-	return 0;
-}
-
 void update_n_request(void)
 {
 	struct s_client *cl;
@@ -1214,7 +1205,6 @@ int32_t send_dcw(struct s_client *client, ECM_REQUEST *er)
 						break;
 				}
 				client->account->acosc_user_zap_count = 0; // we got already a penalty
-				client->account->acosc_penalty_active = 3;
 				client->account->acosc_penalty_active = 4;
 			}
 		}
@@ -1271,6 +1261,7 @@ int32_t send_dcw(struct s_client *client, ECM_REQUEST *er)
 	if(client->start_hidecards)
 	{
 		client->start_hidecards = 0;
+		client->unhidecards_start_time = client->account->acosc_penalty_until;
 		add_job(client, ACTION_CLIENT_HIDECARDS, NULL, 0);
 	}
 	cs_writeunlock(__func__, &clientlist_lock);
@@ -1747,6 +1738,46 @@ static void logCWtoFile(ECM_REQUEST *er, uint8_t *cw)
 	fclose(pfCWL);
 }
 
+uint8_t checkCWpart(uint8_t *cw, uint8_t part)
+{
+	uint8_t eo = (part > 0) ? 8 : 0;
+	uint8_t i;
+	for(i=0; i < 8; i++)
+	{
+		if(cw[i + eo])
+			return 1;
+	}
+	return 0;
+}
+
+bool isCW64bit(uint8_t *cw)
+{
+	uint8_t i;
+	uint8_t sum=0;
+
+	for(i=0; i<8; ++i)
+	{
+		if(cw[i] == 0)
+			sum += 1;
+	}
+
+	if(sum == 8)
+		return true;
+
+	sum = 0;
+
+	for(i=8; i<16; ++i)
+	{
+		if(cw[i] == 0)
+			sum += 1;
+	}
+
+	if(sum == 8)
+		return true;
+
+	return false;
+}
+
 int32_t write_ecm_answer(struct s_reader *reader, ECM_REQUEST *er, int8_t rc, uint8_t rcEx, uint8_t *cw, char *msglog, uint16_t used_cardtier, EXTENDED_CW* cw_ex)
 {
 	if(!reader || !er || !er->tps.time) { return 0; }
@@ -1876,6 +1907,40 @@ int32_t write_ecm_answer(struct s_reader *reader, ECM_REQUEST *er, int8_t rc, ui
 			else
 			{
 				cs_log_dbg(D_TRACE, "notice: CW checksum check disabled for %04X:%06X", er->caid, er->prid);
+
+				if(caid_is_videoguard(er->caid))
+				{
+					/* only if 64bit CWs */
+					if(isCW64bit(cw))
+					{
+						uint8_t k, csum;
+						uint8_t hit = 0;
+						uint8_t oe = checkCWpart(cw, 0) ? 0 : 8;
+
+						for(k=0; k < 8; k+=4)
+						{
+							csum = ((cw[k + oe] + cw[k + oe + 1] + cw[k + oe + 2]) & 0xff);
+
+							if(cw[k + oe + 3] == csum)
+								hit++;
+						}
+
+						if(hit == 2)
+						{
+							char ecmd5s[17 * 3];
+
+							hit = 0;
+
+							cs_hexdump(0, er->ecmd5, 16, ecmd5s, sizeof(ecmd5s));
+
+							/* drop it since it is corected control word which is wrong now on videoguard 64bit cw */
+							rc = E_NOTFOUND;
+							rcEx = E2_WRONG_CHKSUM;
+
+							cs_log_dbg(D_TRACE, "Probably got bad CW from reader: %s, caid %04X, srvid %04X (%s) - dropping CW", reader->label, er->caid, er->srvid, ecmd5s);
+						}
+					}
+				}
 			}
 		}
 		else
@@ -2065,23 +2130,8 @@ int32_t write_ecm_answer(struct s_reader *reader, ECM_REQUEST *er, int8_t rc, ui
 				add_job(reader->client, ACTION_READER_RESTART, NULL, 0);
 			}
 		}
-
-		// this fixes big oscam mistake
-		// wrong reader status on web info aka not counted timeouts which dispalyed
-		// reader info 100 percent OK but reader had a ton of unhandled timeouts!
 		else if(ea->rc == E_TIMEOUT)
 		{
-#ifdef WITH_LB
-			STAT_QUERY q;
-			readerinfofix_get_stat_query(er, &q);
-			READER_STAT *s;
-			s = readerinfofix_get_add_stat(reader, &q);
-			if (s)
-			{
-				cs_log_dbg(D_LB, "inc fail {client %s, caid %04X, prid %06X, srvid %04X} [write_ecm_answer] reader %s rc %d, ecm time %d ms (%d ms)", (check_client(er->client) ? er->client->account->usr : "-"), er->caid, er->prid, er->srvid, reader ? reader->label : "-", rc, ea->ecm_time, ntime);
-				readerinfofix_inc_fail(s); // now increase fail factor for unhandled timeouts
-			}
-#endif
 			reader->ecmstout++; // now append timeouts to the readerinfo timeout count
 			reader->webif_ecmstout++;
 		}

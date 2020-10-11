@@ -1458,3 +1458,24 @@ size_t UnicodetoUTF8(const uint8_t **inbuf, size_t *inbytesleft, uint8_t **outbu
 	}
 	return (size_t)(0);
 }
+
+// random string generator
+void cs_mkrndstr(char *randomString, uint8_t length)
+{
+	static char mkrndstr_charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	uint8_t i = 0;
+	uint8_t n = (uint8_t)(sizeof(mkrndstr_charset)-1);
+
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+
+	srand(tv.tv_usec);
+
+	for (i=0; i < length; i++)
+	{
+		uint8_t key = (uint8_t)(rand() % n);
+		randomString[i] = mkrndstr_charset[key];
+	}
+
+	randomString[length] = '\0';
+}

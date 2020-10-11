@@ -232,8 +232,8 @@ struct cc_data
 	LLIST *extended_ecm_idx;
 
 	// multics detection
-	int8_t multics_mode;
-	int8_t multics_version[2];
+	uint8_t multics_mode;
+	uint8_t multics_version[2];
 
 	// stats:
 	int32_t num_hop1;

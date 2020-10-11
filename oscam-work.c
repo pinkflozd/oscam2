@@ -430,10 +430,11 @@ void *work_thread(void *ptr)
 							int32_t hide_count;
 							int32_t cardsize;
 							int32_t ii, uu=0;
+							uint16_t backup_caid=0;
 							LLIST **sharelist = get_and_lock_sharelist();
 							LLIST *sharelist2 = ll_create("hidecards-sharelist");
 
-							for(ii = 0; ii < CAID_KEY; ii++)
+							for(ii=0; ii < CAID_KEY; ii++)
 							{
 								if(sharelist[ii])
 								{
@@ -446,11 +447,11 @@ void *work_thread(void *ptr)
 							struct cc_card **cardarray = get_sorted_card_copy(sharelist2, 0, &cardsize);
 							ll_destroy(&sharelist2);
 
-							for(ii = 0; ii < cardsize; ii++)
+							for(ii=0; ii < cardsize; ii++)
 							{
 								if(hidecards_card_valid_for_client(cl, cardarray[ii]))
 								{
-									if (cardarray[ii]->id)
+									if(cardarray[ii]->id)
 									{
 										hide_count = hide_card_to_client(cardarray[ii], cl);
 										if(hide_count)
@@ -463,10 +464,23 @@ void *work_thread(void *ptr)
 								}
 							}
 
-							cs_sleepms(hidetime * 1000);
+							/* let use first card and make it fake to send back to client */
+							backup_caid = cardarray[0]->caid;
+							cardarray[0]->caid = 0xBAAD;
+							unhide_card_to_client(cardarray[0], cl);
+							cs_log_dbg(D_TRACE, "Sending fake card_0 caid=0xBAAD remoteid=%08x for %s", cardarray[0]->remote_id, username(cl));
+
+							while(cl->unhidecards_start_time > time(NULL))
+								cs_sleepms(1000);
+
+							/* remove fake card from client and restore caid */
+							hide_card_to_client(cardarray[0], cl);
+							cardarray[0]->caid = backup_caid;
+							cs_log_dbg(D_TRACE, "Removing fake card_0 caid=0xBAAD remoteid=%08x for %s", cardarray[0]->remote_id, username(cl));
+
 							uu = 0;
 
-							for(ii = 0; ii < cardsize; ii++)
+							for(ii=0; ii < cardsize; ii++)
 							{
 								if(hidecards_card_valid_for_client(cl, cardarray[ii]))
 								{
@@ -484,6 +498,7 @@ void *work_thread(void *ptr)
 							}
 
 							NULLFREE(cardarray);
+							cl->unhidecards_start_time = 0;
 						}
 					}
 #endif

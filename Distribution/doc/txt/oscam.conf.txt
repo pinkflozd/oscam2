@@ -257,6 +257,9 @@ DESCRIPTIONS
        lb_reopen_seconds = seconds
 	  time between retrying failed load balanced readers/CAIDs/providers/services, default:900
 
+       lb_nok_tolerance = percent
+	  ecm NOK tolerance in percent, e.g. 90 percent NOK is allowed otherwise reader get blocked for lb_reopen_secconds time, default:20
+
        lb_reopen_invalid = 0|fB1
 	  0 = E_INVALID will be blocked until statistics has been cleaned, default:1
 

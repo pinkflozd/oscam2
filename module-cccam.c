@@ -2801,9 +2801,18 @@ int32_t cc_parse_msg(struct s_client *cl, uint8_t *buf, int32_t l)
 				if(data[33] == 'M' && data[34] == 'C' && data[35] == 'S')
 				{
 					cc->multics_mode = 2; // multics server finaly confirmed.
-					cc->multics_version[0] = data[37];
-					cc->multics_version[1] = data[38];
-					cs_log_dbg(D_READER, "multics detected: %s!", getprefix());
+
+					if (data[31] == 'H' && data[32] == 'B')
+					{
+						cc->multics_mode = 3;
+						memcpy(cc->multics_version, data+29, 2);
+						cs_log_dbg(D_READER, "multics hellboy detected: %s!", getprefix());
+					}
+					else
+					{
+						memcpy(cc->multics_version, data+37, 2);
+						cs_log_dbg(D_READER, "multics detected: %s!", getprefix());
+					}
 				}
 
 				cs_log_dbg(D_READER, "%s remote server %s running v%s (%s)", getprefix(), cs_hexdump(0,
@@ -5070,7 +5079,7 @@ bool cccam_client_extended_mode(struct s_client *cl)
 
 bool cccam_client_multics_mode(struct s_client *cl)
 {
-	return cl && cl->cc && ((struct cc_data *)cl->cc)->multics_mode == 2;
+	return cl && cl->cc && (((struct cc_data *)cl->cc)->multics_mode == 2 || ((struct cc_data *)cl->cc)->multics_mode == 3);
 }
 
 void module_cccam(struct s_module *ph)

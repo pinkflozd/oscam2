@@ -169,6 +169,7 @@ static void cs_fake_client(struct s_client *client, char *usr, int32_t uniq, IN_
 					cs_writeunlock(__func__, &fakeuser_lock);
 					cs_sleepms(120); // sleep a bit to prevent against saturation from fast reconnecting clients
 					kill_thread(cl);
+					cs_writelock(__func__, &fakeuser_lock);
 				}
 			}
 			else
@@ -189,6 +190,7 @@ static void cs_fake_client(struct s_client *client, char *usr, int32_t uniq, IN_
 					cs_writeunlock(__func__, &fakeuser_lock); // we need to unlock here as cs_disconnect_client kills the current thread!
 					cs_sleepms(120); // sleep a bit to prevent against saturation from fast reconnecting clients
 					cs_disconnect_client(client);
+					cs_writelock(__func__, &fakeuser_lock);
 				}
 				break;
 			}

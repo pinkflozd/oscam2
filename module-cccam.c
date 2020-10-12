@@ -883,6 +883,7 @@ int32_t cc_cmd_send(struct s_client *cl, uint8_t *buf, int32_t len, cc_msg_type_
 	uint8_t *netbuf;
 	if(!cs_malloc(&netbuf, len + 4))
 	{
+		cs_writeunlock(__func__, &cc->lockcmd);
 		return -1;
 	}
 
@@ -922,7 +923,6 @@ int32_t cc_cmd_send(struct s_client *cl, uint8_t *buf, int32_t len, cc_msg_type_
 		}
 		else
 		{
-			cs_writeunlock(__func__, &cc->cards_busy);
 			cs_disconnect_client(cl);
 		}
 		n = -1;
@@ -1860,6 +1860,7 @@ int32_t cc_send_ecm(struct s_client *cl, ECM_REQUEST *er)
 			uint8_t *ecmbuf;
 			if(!cs_malloc(&ecmbuf, cur_er->ecmlen + 13))
 			{
+				cs_readunlock(__func__, &cc->cards_busy);
 				break;
 			}
 
@@ -1934,6 +1935,8 @@ int32_t cc_send_ecm(struct s_client *cl, ECM_REQUEST *er)
 				continue; // process next pending ecm!
 			}
 
+			cs_readunlock(__func__, &cc->cards_busy);
+
 			return 0;
 		}
 		else
@@ -1963,6 +1966,7 @@ int32_t cc_send_ecm(struct s_client *cl, ECM_REQUEST *er)
 				cur_er->rc = E_WAITING; // mark as waiting
 			}
 		}
+
 		cs_readunlock(__func__, &cc->cards_busy);
 
 		// process next pending ecm!
@@ -2147,6 +2151,7 @@ int32_t cc_send_emm(EMM_PACKET *ep)
 
 	if(!cs_malloc(&emmbuf, size))
 	{
+		cs_readunlock(__func__, &cc->cards_busy);
 		return 0;
 	}
 
@@ -2772,9 +2777,10 @@ int32_t cc_parse_msg(struct s_client *cl, uint8_t *buf, int32_t l)
 			cs_log_dbg(D_READER, "%s MSG_SRV_DATA (payload=%d, hex=%02X)", getprefix(), l, l);
 			data = cc->receive_buffer;
 
+			cs_writelock(__func__, &cc->cards_busy);
+
 			if(l == 0x48) // 72 bytes: normal server data
 			{
-				cs_writelock(__func__, &cc->cards_busy);
 				cc_free_cardlist(cc->cards, 0);
 				free_extended_ecm_idx(cc);
 				cc->last_emm_card = NULL;
@@ -2897,6 +2903,8 @@ int32_t cc_parse_msg(struct s_client *cl, uint8_t *buf, int32_t l)
 							getprefix(), cc->cmd05_mode);
 				break;
 			}
+
+			cs_writeunlock(__func__, &cc->cards_busy);
 
 			cs_log_dbg(D_READER, "%s MSG_SRV_DATA MODE=%s, len=%d", getprefix(), cmd05_mode_name[cc->cmd05_mode], l);
 			break;

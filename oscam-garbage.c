@@ -84,6 +84,7 @@ void add_garbage(void *data)
 				cs_log("Original garbage addition: %s, line %d.", garbagecheck->file, garbagecheck->line);
 				cs_writeunlock(__func__, &garbage_lock[bucket]);
 				NULLFREE(garbage);
+				cs_writeunlock(__func__, &garbage_lock[bucket]);
 				return;
 			}
 			garbagecheck = garbagecheck->next;
@@ -139,10 +140,7 @@ static void garbage_collector(void)
 				}
 			}
 
-			if(j < 3)
-			{
-				cs_writeunlock(__func__, &garbage_lock[i]);
-			}
+			cs_writeunlock(__func__, &garbage_lock[i]);
 
 			// list has been taken out before so we don't need a lock here anymore!
 			while(garbage)

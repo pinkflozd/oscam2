@@ -470,6 +470,13 @@ time between retrying failed load balanced readers/CAIDs/providers/services, def
 
 <P>
 
+<B>lb_nok_tolerance</B> = <B>percent</B>
+<DL COMPACT><DT><DD>
+ecm NOK tolerance in percent, e.g. 90 percent NOK is allowed otherwise reader get blocked for lb_reopen_secconds time, default:20
+</DL>
+
+<P>
+
 <B>lb_reopen_invalid</B> = <B>0</B>|<B>fB1</B>
 <DL COMPACT><DT><DD>
 0 = E_INVALID will be blocked until statistics has been cleaned, default:1

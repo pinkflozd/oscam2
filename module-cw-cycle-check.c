@@ -249,8 +249,6 @@ static int32_t checkcwcycle_int(ECM_REQUEST *er, char *er_ecmf , char *user, uin
 				currentnode->old = 1; //need later to counting
 				cw_cc_list_size--;
 			}
-			//now we have all data and can leave read lock
-			cs_readunlock(__func__, &cwcycle_lock);
 #ifdef WITH_DEBUG
 			if(cs_dblevel & D_CWC)
 			{
@@ -582,6 +580,7 @@ static int32_t checkcwcycle_int(ECM_REQUEST *er, char *er_ecmf , char *user, uin
 		}
 		break;
 	}
+	cs_readunlock(__func__, &cwcycle_lock);
 
 	if(need_new_entry)
 	{

@@ -1221,6 +1221,11 @@ void reader_do_idle(struct s_reader *reader)
 
 int32_t reader_init(struct s_reader *reader)
 {
+	if (reader == NULL)
+	{
+		return 0;
+	}
+
 	struct s_client *client = reader->client;
 
 	if(is_cascading_reader(reader))
@@ -1259,6 +1264,9 @@ int32_t reader_init(struct s_reader *reader)
 	}
 
 	ll_destroy_data(&reader->emmstat);
+
+	// set unique_id to the reader
+	cs_mkrndstr(reader->unique_id, sizeof(reader->unique_id));
 
 	client->login = time((time_t *)0);
 	client->init_done = 1;

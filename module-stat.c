@@ -41,12 +41,12 @@ void init_stat(void)
 
 	// checking config
 
-	if (cfg.lb_nbest_readers < 2)
+	if (cfg.lb_nbest_readers < 1)
 	{
 		cfg.lb_nbest_readers = DEFAULT_NBEST;
 	}
 
-	if (cfg.lb_nfb_readers < 2)
+	if (cfg.lb_nfb_readers < 1)
 	{
 		cfg.lb_nfb_readers = DEFAULT_NFB;
 	}
